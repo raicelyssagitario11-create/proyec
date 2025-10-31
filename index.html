@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reportes Financieros | Mockup</title>
+    <!-- Carga de Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Configuración para usar la fuente Inter -->
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div id="app" class="p-4 sm:p-8">
+        <!-- Contenido principal cargado por JS -->
+    </div>
+
+    <!-- Modal de Mensaje (Reemplazo de alert()) -->
+    <div id="message-modal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50">
+        <div class="bg-white p-6 rounded-xl shadow-2xl max-w-sm w-full">
+            <h3 id="modal-title" class="text-xl font-bold mb-4 text-gray-800">Mensaje</h3>
+            <p id="modal-content" class="text-gray-600 mb-6"></p>
+            <button onclick="document.getElementById('message-modal').classList.add('hidden')" class="w-full bg-blue-600 text-white p-3 rounded-lg font-semibold hover:bg-blue-700 transition">Cerrar</button>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
