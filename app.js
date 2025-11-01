@@ -1,8 +1,6 @@
 // --- MOCK DE DATOS (Simulación de Supabase PostgreSQL) ---
 // Los IDs son mockeados y autoincrementales para la simulación
-let nextClientId = 3;
-let nextProjectId = 4;
-let nextPaymentId = 5;
+
 let MOCK_DATA = {
     admin: { email: 'admin@mock.com', password: 'password' }, // Simulación de Supabase Auth
     clients: [
@@ -29,13 +27,31 @@ let MOCK_DATA = {
     ]
 };
 
+// Emails de administrador permitidos (pueden inyectarse desde index.html como window.ADMIN_EMAILS)
+const ADMIN_EMAILS = (window.ADMIN_EMAILS || [MOCK_DATA.admin.email]).map(e => String(e).toLowerCase());
+
+function isAdminUser(user) {
+    if (!user) return false;
+    const email = String(user.email || '').toLowerCase();
+    if (ADMIN_EMAILS.includes(email)) return true;
+    // revisar metadata si se configuró un role='admin'
+    try {
+        if (user.user_metadata && String(user.user_metadata.role).toLowerCase() === 'admin') return true;
+        if (user.app_metadata && String(user.app_metadata.role).toLowerCase() === 'admin') return true;
+    } catch (e) {
+        // ignore
+    }
+    return false;
+}
+
 // --- ESTADO DE LA APLICACIÓN ---
 const state = {
     currentView: 'login', // 'login', 'admin', 'client'
     clientData: null, // Datos del cliente si está en la vista 'client'
     isAdminAuthenticated: false,
-    adminSubView: 'clients', // 'clients', 'projects', 'payments', 'logs'
-    message: ''
+    adminSubView: 'projects', // 'clients', 'projects', 'payments', 'logs'
+    message: '',
+    adminData: { clients: [], projects: [], payments: [] }
 };
 
 // --- UTILIDADES GLOBALES ---
@@ -67,6 +83,7 @@ function logAction(action, detail) {
 function setView(view, data = null) {
     state.currentView = view;
     state.clientData = data;
+    if (view === 'admin' && window.supabase) { loadAdminData(); }
     renderApp();
 }
 
@@ -130,12 +147,65 @@ async function generateTokenLink(clientId) {
 
 // --- LÓGICA DE GESTIÓN (CRUD MOCK - ADMIN) ---
 
+// --- INTEGRACIÓN SUPABASE CRUD (ADMIN) ---
+async function supabaseNextId(table) {
+    const { data, error } = await window.supabase.from(table).select('id').order('id', { ascending: false }).limit(1);
+    if (error) throw error;
+    return (data && data[0]?.id ? Number(data[0].id) + 1 : 1);
+}
+const statusIntToStr = (s) => Number(s) === 1 ? 'Activo' : 'Cerrado';
+const statusStrToInt = (s) => String(s) === 'Activo' ? 1 : 0;
+
+async function loadAdminData() {
+    if (!window.supabase) return;
+    try {
+        const [cliRes, projRes, payRes] = await Promise.all([
+            window.supabase.from('clients').select('id,name,email').order('id'),
+            window.supabase.from('projects').select('id,client_id,name,status,budget,balance').order('id'),
+            window.supabase.from('payments').select('id,project_id,date,amount,type').order('id')
+        ]);
+        if (cliRes.error) throw cliRes.error;
+        if (projRes.error) throw projRes.error;
+        if (payRes.error) throw payRes.error;
+        state.adminData.clients = (cliRes.data || []).map(c => ({ id: c.id, name: c.name, email: c.email }));
+        state.adminData.projects = (projRes.data || []).map(p => ({
+            id: p.id, clientId: p.client_id, name: p.name,
+            status: statusIntToStr(p.status), budget: Number(p.budget), balance: Number(p.balance)
+        }));
+        state.adminData.payments = (payRes.data || []).map(p => ({
+            id: p.id, projectId: p.project_id, date: p.date, amount: Number(p.amount), type: p.type
+        }));
+        renderApp();
+    } catch (e) {
+        console.warn('loadAdminData error', e);
+        showMessage('Error', 'No se pudo cargar datos desde la base.');
+    }
+}
+
 function addClient() {
     const name = document.getElementById('new-client-name').value.trim();
     const email = document.getElementById('new-client-email').value.trim();
 
     if (!name || !email) {
         showMessage('Error', 'Por favor, complete el nombre y el email del cliente.');
+        return;
+    }
+
+    if (window.supabase) {
+        (async () => {
+            try {
+                const id = await supabaseNextId('clients');
+                const { error } = await window.supabase.from('clients').insert([{ id, name, email }]);
+                if (error) throw error;
+                logAction('CLIENT_CREATE', `Cliente creado: ${name}`);
+                showMessage('Éxito', `Cliente ${name} agregado correctamente.`);
+                document.getElementById('new-client-name').value = '';
+                document.getElementById('new-client-email').value = '';
+                await loadAdminData();
+            } catch (e) {
+                showMessage('Error', String(e.message || e));
+            }
+        })();
         return;
     }
 
@@ -166,6 +236,24 @@ function addProject() {
         return;
     }
 
+    if (window.supabase) {
+        (async () => {
+            try {
+                const id = await supabaseNextId('projects');
+                const row = { id, client_id: Number(clientId), name, status: statusStrToInt(status), budget, balance: budget };
+                const { error } = await window.supabase.from('projects').insert([row]);
+                if (error) throw error;
+                logAction('PROJECT_CREATE', `Proyecto creado: ${name} (Cliente: ${clientId})`);
+                showMessage('Éxito', `Proyecto ${name} agregado correctamente. Balance inicial: ${formatCurrency(budget)}`);
+                form.reset();
+                await loadAdminData();
+            } catch (e) {
+                showMessage('Error', String(e.message || e));
+            }
+        })();
+        return;
+    }
+
     const newProject = {
         id: generateId('proj'),
         clientId: clientId,
@@ -188,6 +276,29 @@ function addPayment() {
     const amount = parseFloat(form['new-payment-amount'].value) || 0;
     const type = form['new-payment-type'].value;
     const date = new Date().toISOString().split('T')[0]; // Fecha actual
+
+    if (window.supabase) {
+        (async () => {
+            try {
+                const id = await supabaseNextId('payments');
+                const { error: insErr } = await window.supabase.from('payments').insert([{ id, project_id: Number(projectId), date, amount, type }]);
+                if (insErr) throw insErr;
+                const { data: proj, error: selErr } = await window.supabase.from('projects').select('id,balance').eq('id', Number(projectId)).single();
+                if (selErr) throw selErr;
+                const newBalance = Math.max(0, Number(proj.balance) - amount);
+                const newStatus = newBalance === 0 ? 0 : 1;
+                const { error: upErr } = await window.supabase.from('projects').update({ balance: newBalance, status: newStatus }).eq('id', Number(projectId));
+                if (upErr) throw upErr;
+                logAction('PAYMENT_CREATE', `Pago de ${formatCurrency(amount)} registrado para proyecto: ${projectId}`);
+                showMessage('Éxito', `Pago de ${formatCurrency(amount)} registrado. Balance actualizado: ${formatCurrency(newBalance)}`);
+                form.reset();
+                await loadAdminData();
+            } catch (e) {
+                showMessage('Error', String(e.message || e));
+            }
+        })();
+        return;
+    }
 
     const project = MOCK_DATA.projects.find(p => p.id === projectId);
 
@@ -222,6 +333,149 @@ function addPayment() {
     renderApp();
 }
 
+// --- Edit/Update/Delete (CRUD extra) ---
+function editClient(id) {
+    const list = window.supabase ? state.adminData.clients : MOCK_DATA.clients;
+    const c = list.find(x => String(x.id) === String(id));
+    if (!c) return showMessage('Error', 'Cliente no encontrado');
+    const name = prompt('Nombre', c.name);
+    if (name === null) return;
+    const email = prompt('Email', c.email);
+    if (email === null) return;
+    if (window.supabase) {
+        (async () => {
+            try {
+                const { error } = await window.supabase.from('clients').update({ name, email }).eq('id', Number(id));
+                if (error) throw error;
+                await loadAdminData();
+            } catch (e) { showMessage('Error', String(e.message || e)); }
+        })();
+    } else {
+        c.name = name; c.email = email; renderApp();
+    }
+}
+
+function deleteClient(id) {
+    if (!confirm('¿Eliminar cliente? Esta acción puede requerir eliminar proyectos primero.')) return;
+    if (window.supabase) {
+        (async () => {
+            try {
+                const { data: pr } = await window.supabase.from('projects').select('id').eq('client_id', Number(id)).limit(1);
+                if (pr && pr.length) return showMessage('Bloqueado', 'Elimine proyectos del cliente primero.');
+                const { error } = await window.supabase.from('clients').delete().eq('id', Number(id));
+                if (error) throw error;
+                await loadAdminData();
+            } catch (e) { showMessage('Error', String(e.message || e)); }
+        })();
+    } else {
+        MOCK_DATA.clients = MOCK_DATA.clients.filter(x => String(x.id) !== String(id));
+        renderApp();
+    }
+}
+
+function editProject(id) {
+    const projs = window.supabase ? state.adminData.projects : MOCK_DATA.projects;
+    const clients = window.supabase ? state.adminData.clients : MOCK_DATA.clients;
+    const pays = window.supabase ? state.adminData.payments : MOCK_DATA.payments;
+    const p = projs.find(x => String(x.id) === String(id));
+    if (!p) return showMessage('Error', 'Proyecto no encontrado');
+    const name = prompt('Nombre', p.name); if (name === null) return;
+    const status = prompt("Estado ('Activo'/'Cerrado')", p.status); if (status === null) return;
+    const budgetStr = prompt('Presupuesto', String(p.budget)); if (budgetStr === null) return;
+    const budget = parseFloat(budgetStr) || 0;
+    const paidSum = pays.filter(x => String(x.projectId) === String(id)).reduce((s, x) => s + Number(x.amount), 0);
+    const newBalance = Math.max(0, budget - paidSum);
+    if (window.supabase) {
+        (async () => {
+            try {
+                const { error } = await window.supabase.from('projects').update({ name, status: statusStrToInt(status), budget, balance: newBalance }).eq('id', Number(id));
+                if (error) throw error;
+                await loadAdminData();
+            } catch (e) { showMessage('Error', String(e.message || e)); }
+        })();
+    } else {
+        p.name = name; p.status = status; p.budget = budget; p.balance = newBalance; renderApp();
+    }
+}
+
+function deleteProject(id) {
+    if (!confirm('¿Eliminar proyecto? Si tiene pagos, elimínelos primero.')) return;
+    if (window.supabase) {
+        (async () => {
+            try {
+                const { data: py } = await window.supabase.from('payments').select('id').eq('project_id', Number(id)).limit(1);
+                if (py && py.length) return showMessage('Bloqueado', 'Elimine pagos del proyecto primero.');
+                const { error } = await window.supabase.from('projects').delete().eq('id', Number(id));
+                if (error) throw error;
+                await loadAdminData();
+            } catch (e) { showMessage('Error', String(e.message || e)); }
+        })();
+    } else {
+        MOCK_DATA.projects = MOCK_DATA.projects.filter(x => String(x.id) !== String(id));
+        MOCK_DATA.payments = MOCK_DATA.payments.filter(x => String(x.projectId) !== String(id));
+        renderApp();
+    }
+}
+
+function editPayment(id) {
+    const pays = window.supabase ? state.adminData.payments : MOCK_DATA.payments;
+    const projs = window.supabase ? state.adminData.projects : MOCK_DATA.projects;
+    const pay = pays.find(x => String(x.id) === String(id));
+    if (!pay) return showMessage('Error', 'Pago no encontrado');
+    const date = prompt('Fecha (YYYY-MM-DD)', pay.date); if (date === null) return;
+    const type = prompt('Tipo', pay.type); if (type === null) return;
+    const amtStr = prompt('Monto', String(pay.amount)); if (amtStr === null) return;
+    const amount = parseFloat(amtStr) || 0;
+    const delta = amount - Number(pay.amount);
+    if (window.supabase) {
+        (async () => {
+            try {
+                const { error: upPayErr } = await window.supabase.from('payments').update({ date, type, amount }).eq('id', Number(id));
+                if (upPayErr) throw upPayErr;
+                const { data: proj } = await window.supabase.from('projects').select('balance').eq('id', Number(pay.projectId)).single();
+                const newBalance = Math.max(0, Number(proj.balance) - delta);
+                const newStatus = newBalance === 0 ? 0 : 1;
+                const { error: upProjErr } = await window.supabase.from('projects').update({ balance: newBalance, status: newStatus }).eq('id', Number(pay.projectId));
+                if (upProjErr) throw upProjErr;
+                await loadAdminData();
+            } catch (e) { showMessage('Error', String(e.message || e)); }
+        })();
+    } else {
+        const project = projs.find(x => String(x.id) === String(pay.projectId));
+        project.balance = Math.max(0, project.balance - delta);
+        project.status = project.balance === 0 ? 'Cerrado' : 'Activo';
+        pay.date = date; pay.type = type; pay.amount = amount; renderApp();
+    }
+}
+
+function deletePayment(id) {
+    if (!confirm('¿Eliminar pago?')) return;
+    const pays = window.supabase ? state.adminData.payments : MOCK_DATA.payments;
+    const projs = window.supabase ? state.adminData.projects : MOCK_DATA.projects;
+    const pay = pays.find(x => String(x.id) === String(id));
+    if (!pay) return showMessage('Error', 'Pago no encontrado');
+    if (window.supabase) {
+        (async () => {
+            try {
+                const { data: proj } = await window.supabase.from('projects').select('balance').eq('id', Number(pay.projectId)).single();
+                const newBalance = Math.max(0, Number(proj.balance) + Number(pay.amount));
+                const newStatus = newBalance === 0 ? 0 : 1;
+                const { error: upProjErr } = await window.supabase.from('projects').update({ balance: newBalance, status: newStatus }).eq('id', Number(pay.projectId));
+                if (upProjErr) throw upProjErr;
+                const { error } = await window.supabase.from('payments').delete().eq('id', Number(id));
+                if (error) throw error;
+                await loadAdminData();
+            } catch (e) { showMessage('Error', String(e.message || e)); }
+        })();
+    } else {
+        const project = projs.find(x => String(x.id) === String(pay.projectId));
+        project.balance = Math.max(0, project.balance + Number(pay.amount));
+        project.status = project.balance === 0 ? 'Cerrado' : 'Activo';
+        MOCK_DATA.payments = MOCK_DATA.payments.filter(x => String(x.id) !== String(id));
+        renderApp();
+    }
+}
+
 async function createClientLink(clientId) {
     const link = await generateTokenLink(clientId);
     const clientName = MOCK_DATA.clients.find(c => c.id === clientId).name;
@@ -249,6 +503,7 @@ function handleAdminLogin() {
     if (email === MOCK_DATA.admin.email && password === MOCK_DATA.admin.password) {
         state.isAdminAuthenticated = true;
         logAction('ADMIN_LOGIN', 'Inicio de sesión exitoso.');
+        state.adminSubView = 'projects';
         setView('admin');
     } else {
         showMessage('Error de Autenticación', 'Credenciales inválidas. Por favor, intente de nuevo.');
@@ -257,9 +512,75 @@ function handleAdminLogin() {
 }
 
 function handleAdminLogout() {
+    // Si el admin está autenticado vía Supabase, cerrar la sesión de Supabase
+    if (state.user) {
+        // cierra sesión en Supabase y vuelve a la vista de login
+        handleUserSignOut();
+        logAction('ADMIN_LOGOUT', 'Cierre de sesión (Supabase).');
+        return;
+    }
+
+    // Flujo antiguo (mock)
     state.isAdminAuthenticated = false;
     logAction('ADMIN_LOGOUT', 'Cierre de sesión.');
     setView('login');
+}
+
+// --- INTEGRACIÓN CON SUPABASE (USUARIOS) ---
+
+async function handleUserSignUp() {
+    const email = document.getElementById('user-signup-email').value.trim();
+    const password = document.getElementById('user-signup-password').value.trim();
+    if (!email || !password) return showMessage('Error', 'Ingrese email y contraseña para registrarse.');
+
+    try {
+        const { data, error } = await window.supabase.auth.signUp({ email, password });
+        if (error) return showMessage('Error registro', error.message || JSON.stringify(error));
+
+        // Si la confirmación por email está habilitada, data.user existe pero session puede ser null
+        if (data?.session) {
+            state.user = data.session.user;
+            // Todas las sesiones autenticadas ven el panel admin
+            state.isAdminAuthenticated = true;
+            state.adminSubView = 'projects';
+            setView('admin');
+            showMessage('Registro exitoso', `Bienvenido ${state.user.email}`);
+        } else {
+            showMessage('Registro recibido', 'Revise su email para confirmar la cuenta si aplica.');
+        }
+    } catch (err) {
+        showMessage('Error', String(err));
+    }
+}
+
+async function handleUserSignIn() {
+    const email = document.getElementById('user-signin-email').value.trim();
+    const password = document.getElementById('user-signin-password').value.trim();
+    if (!email || !password) return showMessage('Error', 'Ingrese email y contraseña para iniciar sesión.');
+
+    try {
+        const { data, error } = await window.supabase.auth.signInWithPassword({ email, password });
+        if (error) return showMessage('Error login', error.message || JSON.stringify(error));
+        state.user = data.session?.user || data.user;
+        // Todas las sesiones autenticadas ven el panel admin
+        state.isAdminAuthenticated = true;
+        logAction('ADMIN_LOGIN', `Inicio de sesión: ${state.user.email}`);
+        state.adminSubView = 'projects';
+        setView('admin');
+        showMessage('Sesión iniciada', `Hola ${state.user.email}`);
+    } catch (err) {
+        showMessage('Error', String(err));
+    }
+}
+
+async function handleUserSignOut() {
+    try {
+        await window.supabase.auth.signOut();
+        state.user = null;
+        setView('login');
+    } catch (err) {
+        showMessage('Error', 'No fue posible cerrar la sesión.');
+    }
 }
 
 function printReport() {
@@ -270,29 +591,77 @@ function printReport() {
 
 /** RENDER: Vista de Login */
 function renderLogin() {
+    // Vista principal: login admin + enlaces a vistas separadas para usuario (login / register)
     return `
         <div class="flex items-center justify-center min-h-[80vh] print-area">
             <div class="w-full max-w-md bg-white p-8 rounded-xl shadow-lg border border-gray-200">
-                <h1 class="text-3xl font-extrabold text-center text-gray-900 mb-6">
-                    Acceso al Panel
-                </h1>
-                <p class="text-sm text-center text-gray-500 mb-6">
-                    Ingrese las credenciales de administrador (Simulación de Supabase Auth).
-                </p>
-                <form onsubmit="event.preventDefault(); handleAdminLogin();">
-                    <div class="mb-4">
-                        <label for="admin-email" class="block text-sm font-medium text-gray-700">Email</label>
-                        <input type="email" id="admin-email" value="admin@mock.com" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500" required>
+                <h2 class="text-2xl font-extrabold text-gray-900 mb-4">Acceso de Usuario</h2>
+                <p class="text-sm text-gray-500 mb-4">Inicia sesión o regístrate con tu cuenta (Supabase).</p>
+                <div class="space-y-3 mt-6">
+                    <button onclick="setView('user-login')" class="w-full bg-indigo-600 text-white py-2 px-4 rounded-lg font-semibold hover:bg-indigo-700">Login de Usuario</button>
+                    <button onclick="setView('user-register')" class="w-full bg-green-600 text-white py-2 px-4 rounded-lg font-semibold hover:bg-green-700">Registro de Usuario</button>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+/** RENDER: Vista de Login de Usuario (Supabase) */
+function renderUserLogin() {
+    return `
+        <div class="flex items-center justify-center min-h-[80vh]">
+            <div class="w-full max-w-md bg-white p-8 rounded-xl shadow-lg border border-gray-200">
+                <h2 class="text-2xl font-bold mb-4">Iniciar sesión (Usuario)</h2>
+                <p class="text-sm text-gray-500 mb-4">Ingrese sus credenciales para acceder.</p>
+                <form onsubmit="event.preventDefault(); handleUserSignIn();">
+                    <input id="user-signin-email" type="email" placeholder="Email" class="w-full p-3 border rounded-lg mb-3" required />
+                    <input id="user-signin-password" type="password" placeholder="Contraseña" class="w-full p-3 border rounded-lg mb-4" required />
+                    <div class="flex gap-3">
+                        <button type="submit" class="flex-1 bg-indigo-600 text-white py-2 rounded-lg">Entrar</button>
+                        <button type="button" onclick="setView('login')" class="flex-1 bg-gray-200 text-gray-700 py-2 rounded-lg">Volver</button>
                     </div>
-                    <div class="mb-6">
-                        <label for="admin-password" class="block text-sm font-medium text-gray-700">Contraseña</label>
-                        <input type="password" id="admin-password" value="password" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500" required>
-                    </div>
-                    <button type="submit" class="w-full bg-blue-600 text-white py-2 px-4 rounded-lg font-semibold hover:bg-blue-700 transition duration-150 shadow-md">
-                        Iniciar Sesión
-                    </button>
                 </form>
             </div>
+        </div>
+    `;
+}
+
+/** RENDER: Vista de Registro de Usuario (Supabase) */
+function renderUserRegister() {
+    return `
+        <div class="flex items-center justify-center min-h-[80vh]">
+            <div class="w-full max-w-md bg-white p-8 rounded-xl shadow-lg border border-gray-200">
+                <h2 class="text-2xl font-bold mb-4">Registro de Usuario</h2>
+                <p class="text-sm text-gray-500 mb-4">Crea una cuenta nueva con tu email y contraseña.</p>
+                <form onsubmit="event.preventDefault(); handleUserSignUp();">
+                    <input id="user-signup-email" type="email" placeholder="Email" class="w-full p-3 border rounded-lg mb-3" required />
+                    <input id="user-signup-password" type="password" placeholder="Contraseña" class="w-full p-3 border rounded-lg mb-4" required />
+                    <div class="flex gap-3">
+                        <button type="submit" class="flex-1 bg-green-600 text-white py-2 rounded-lg">Crear Cuenta</button>
+                        <button type="button" onclick="setView('login')" class="flex-1 bg-gray-200 text-gray-700 py-2 rounded-lg">Volver</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    `;
+}
+
+/** RENDER: Panel simple para usuario autenticado (Supabase) */
+function renderUserDashboard() {
+    const email = state.user?.email || 'Usuario';
+    return `
+        <div class="max-w-4xl mx-auto">
+            <header class="flex justify-between items-center mb-6">
+                <h1 class="text-2xl font-bold">Panel de Usuario</h1>
+                <div class="flex items-center gap-3">
+                    <span class="text-sm text-gray-600">${email}</span>
+                    <button onclick="handleUserSignOut()" class="bg-red-500 text-white py-2 px-3 rounded-lg">Cerrar sesión</button>
+                </div>
+            </header>
+            <main class="bg-white p-6 rounded-lg shadow-sm">
+                <p class="text-gray-700">Bienvenido, <strong>${email}</strong>. Este es un panel mínimo que confirma que la autenticación con Supabase funciona.</p>
+                <p class="text-sm text-gray-500 mt-4">Aquí podrías mostrar información protegida, llamadas a la API con Authorization: Bearer &lt;access_token&gt;, o links a la configuración de cuenta.</p>
+            </main>
         </div>
     `;
 }
@@ -434,17 +803,20 @@ function renderClientDashboard(data) {
 
 /** RENDER: Panel de Administración (CRUD y Logs) */
 function renderAdminDashboard() {
-    const clientOptions = MOCK_DATA.clients.map(c => `<option value="${c.id}">${c.name} (${c.email})</option>`).join('');
-    const projectOptions = MOCK_DATA.projects.map(p => `<option value="${p.id}">${p.name} (${p.id})</option>`).join('');
+    const clients = window.supabase ? state.adminData.clients : MOCK_DATA.clients;
+    const projects = window.supabase ? state.adminData.projects : MOCK_DATA.projects;
+    const payments = window.supabase ? state.adminData.payments : MOCK_DATA.payments;
+    const clientOptions = clients.map(c => `<option value="${c.id}">${c.name} (${c.email})</option>`).join('');
+    const projectOptions = projects.map(p => `<option value="${p.id}">${p.name} (${p.id})</option>`).join('');
 
     const renderSubView = () => {
         switch (state.adminSubView) {
             case 'clients':
-                return renderAdminClients(clientOptions);
+                return renderAdminClients(clients);
             case 'projects':
-                return renderAdminProjects(clientOptions);
+                return renderAdminProjects(clientOptions, clients, projects);
             case 'payments':
-                return renderAdminPayments(projectOptions);
+                return renderAdminPayments(projectOptions, projects, payments);
             case 'logs':
                 return renderAdminLogs();
             default:
@@ -488,7 +860,7 @@ function renderAdminDashboard() {
 }
 
 /** RENDER: Sub-vista Admin - Clientes */
-function renderAdminClients(clientOptions) {
+function renderAdminClients(clients) {
     return `
         <h2 class="text-2xl font-bold mb-6 text-gray-800">Gestión de Clientes y Acceso</h2>
         
@@ -505,7 +877,7 @@ function renderAdminClients(clientOptions) {
         </div>
 
         <!-- Lista de Clientes -->
-        <h3 class="text-xl font-bold mb-4 text-gray-700">Lista de Clientes (${MOCK_DATA.clients.length})</h3>
+        <h3 class="text-xl font-bold mb-4 text-gray-700">Lista de Clientes (${clients.length})</h3>
         <div class="overflow-x-auto">
             <table class="min-w-full divide-y divide-gray-200">
                 <thead class="bg-gray-50">
@@ -516,14 +888,14 @@ function renderAdminClients(clientOptions) {
                     </tr>
                 </thead>
                 <tbody class="bg-white divide-y divide-gray-200">
-                    ${MOCK_DATA.clients.map(c => `
+                    ${clients.map(c => `
                         <tr>
                             <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">${c.name}</td>
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${c.email}</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-center no-print">
-                                <button onclick="createClientLink('${c.id}')" class="text-indigo-600 hover:text-indigo-900 font-medium text-sm">
-                                    Generar Link Acceso
-                                </button>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-center no-print space-x-2">
+                                ${window.supabase ? '' : `<button onclick=\"createClientLink('${c.id}')\" class=\"text-indigo-600 hover:text-indigo-900 font-medium text-sm\">Link</button>`}
+                                <button onclick="editClient(${JSON.stringify(c.id)})" class="text-blue-600 hover:text-blue-800 font-medium text-sm">Editar</button>
+                                <button onclick="deleteClient(${JSON.stringify(c.id)})" class="text-red-600 hover:text-red-800 font-medium text-sm">Eliminar</button>
                             </td>
                         </tr>
                     `).join('')}
@@ -534,7 +906,7 @@ function renderAdminClients(clientOptions) {
 }
 
 /** RENDER: Sub-vista Admin - Proyectos */
-function renderAdminProjects(clientOptions) {
+function renderAdminProjects(clientOptions, clients, projects) {
     return `
         <h2 class="text-2xl font-bold mb-6 text-gray-800">Gestión de Proyectos</h2>
 
@@ -559,7 +931,7 @@ function renderAdminProjects(clientOptions) {
         </div>
 
         <!-- Lista de Proyectos -->
-        <h3 class="text-xl font-bold mb-4 text-gray-700">Proyectos Registrados (${MOCK_DATA.projects.length})</h3>
+        <h3 class="text-xl font-bold mb-4 text-gray-700">Proyectos Registrados (${projects.length})</h3>
         <div class="overflow-x-auto">
             <table class="min-w-full divide-y divide-gray-200">
                 <thead class="bg-gray-50">
@@ -569,11 +941,12 @@ function renderAdminProjects(clientOptions) {
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Presupuesto</th>
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Balance Pendiente</th>
                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Estado</th>
+                        <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider no-print">Acciones</th>
                     </tr>
                 </thead>
                 <tbody class="bg-white divide-y divide-gray-200">
-                    ${MOCK_DATA.projects.map(p => {
-                        const client = MOCK_DATA.clients.find(c => c.id === p.clientId) || { name: 'N/A' };
+                    ${projects.map(p => {
+                        const client = clients.find(c => c.id === p.clientId) || { name: 'N/A' };
                         const statusColor = p.status === 'Activo' ? 'text-green-600 bg-green-100' : 'text-gray-600 bg-gray-100';
                         return `
                             <tr>
@@ -586,6 +959,10 @@ function renderAdminProjects(clientOptions) {
                                         ${p.status}
                                     </span>
                                 </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-sm text-center no-print space-x-2">
+                                    <button onclick="editProject(${JSON.stringify(p.id)})" class="text-blue-600 hover:text-blue-800 font-medium text-sm">Editar</button>
+                                    <button onclick="deleteProject(${JSON.stringify(p.id)})" class="text-red-600 hover:text-red-800 font-medium text-sm">Eliminar</button>
+                                </td>
                             </tr>
                         `;
                     }).join('')}
@@ -596,7 +973,7 @@ function renderAdminProjects(clientOptions) {
 }
 
 /** RENDER: Sub-vista Admin - Pagos */
-function renderAdminPayments(projectOptions) {
+function renderAdminPayments(projectOptions, projects, payments) {
     return `
         <h2 class="text-2xl font-bold mb-6 text-gray-800">Gestión de Pagos</h2>
 
@@ -608,7 +985,7 @@ function renderAdminPayments(projectOptions) {
                     <option value="">-- Seleccionar Proyecto --</option>
                     ${projectOptions}
                 </select>
-                <input type="number" name="new-payment-amount" placeholder="Monto del Pago" step="100" min="1" class="p-2 border rounded-lg" required>
+                <input type="number" name="new-payment-amount" placeholder="Monto del Pago" step="any" min="1" class="p-2 border rounded-lg" required>
                 <select name="new-payment-type" class="p-2 border rounded-lg">
                     <option value="Inicial">Pago Inicial</option>
                     <option value="Hito">Hito de Proyecto</option>
@@ -621,7 +998,7 @@ function renderAdminPayments(projectOptions) {
         </div>
 
         <!-- Historial de Pagos -->
-        <h3 class="text-xl font-bold mb-4 text-gray-700">Historial de Pagos (${MOCK_DATA.payments.length})</h3>
+        <h3 class="text-xl font-bold mb-4 text-gray-700">Historial de Pagos (${payments.length})</h3>
         <div class="overflow-x-auto">
             <table class="min-w-full divide-y divide-gray-200">
                 <thead class="bg-gray-50">
@@ -633,8 +1010,8 @@ function renderAdminPayments(projectOptions) {
                     </tr>
                 </thead>
                 <tbody class="bg-white divide-y divide-gray-200">
-                    ${MOCK_DATA.payments.map(p => {
-                        const project = MOCK_DATA.projects.find(proj => proj.id === p.projectId) || { name: 'N/A' };
+                    ${payments.map(p => {
+                        const project = projects.find(proj => proj.id === p.projectId) || { name: 'N/A' };
                         return `
                             <tr>
                                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${p.date}</td>
@@ -679,6 +1056,12 @@ function renderApp() {
         appDiv.innerHTML = renderLogin();
     } else if (state.currentView === 'admin') {
         appDiv.innerHTML = renderAdminDashboard();
+    } else if (state.currentView === 'user') {
+        appDiv.innerHTML = renderUserDashboard();
+    } else if (state.currentView === 'user-login') {
+        appDiv.innerHTML = renderUserLogin();
+    } else if (state.currentView === 'user-register') {
+        appDiv.innerHTML = renderUserRegister();
     } else if (state.currentView === 'client' && state.clientData) {
         appDiv.innerHTML = renderClientDashboard(state.clientData);
     } else {
@@ -700,6 +1083,47 @@ function renderApp() {
 // --- INICIALIZACIÓN DE LA APLICACIÓN ---
 
 async function initializeApp() {
+    // Primero: si hay una sesión activa en Supabase, mostrar la vista de usuario
+    try {
+        if (window.supabase) {
+            const { data: { session } } = await window.supabase.auth.getSession();
+            if (session) {
+                state.user = session.user;
+                // Todas las sesiones autenticadas ven el panel admin
+                state.isAdminAuthenticated = true;
+                state.adminSubView = 'clients';
+                setView('admin');
+                return;
+            }
+        }
+    } catch (e) {
+        console.warn('No se pudo obtener sesión de Supabase', e);
+    }
+
+    // Suscribirse a cambios de estado de autenticación (útil para OAuth/magic links)
+    try {
+        if (window.supabase && typeof window.supabase.auth.onAuthStateChange === 'function') {
+            window.supabase.auth.onAuthStateChange((event, session) => {
+                console.log('Supabase auth event:', event);
+                state.user = session?.user || null;
+                if (event === 'SIGNED_IN') {
+                    // limpiar URL para evitar tokens en la barra de direcciones
+                    try { window.history.replaceState({}, document.title, window.location.pathname); } catch (e) { /* ignore */ }
+                    // Todas las sesiones autenticadas ven el panel admin
+                    state.isAdminAuthenticated = true;
+                    state.adminSubView = 'projects';
+                    setView('admin');
+                } else if (event === 'SIGNED_OUT') {
+                    state.user = null;
+                    state.isAdminAuthenticated = false;
+                    setView('login');
+                }
+            });
+        }
+    } catch (e) {
+        console.warn('No se pudo subscribir a onAuthStateChange', e);
+    }
+
     const params = new URLSearchParams(window.location.search);
     const token = params.get('token');
 

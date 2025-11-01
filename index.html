@@ -23,6 +23,17 @@
         </div>
     </div>
 
+    <script type="module">
+        import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm'
+
+        const SUPABASE_URL = 'https://gazuakkeynwoeaazrnzw.supabase.co'
+        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdhenVha2tleW53b2VhYXpybnp3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjIwMTIwNzgsImV4cCI6MjA3NzU4ODA3OH0.8ieyGHej7ORwfI_RcEjn8irznximnWlNbuuKZEDU8ng'
+        const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+
+        // ejemplo sencillo
+        window.supabase = supabase
+        console.log('Supabase inicializado')
+    </script>
     <script src="app.js"></script>
 </body>
 </html>
