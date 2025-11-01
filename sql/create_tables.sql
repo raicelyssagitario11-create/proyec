@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS projects (
     budget NUMERIC(14,2) NOT NULL CHECK (budget >= 0),
     balance NUMERIC(14,2) NOT NULL CHECK (balance >= 0),
     created_at TIMESTAMPTZ DEFAULT now()
+    -- delete Boolean DEFAULT FALSE
 );
 
 -- Ensure status only takes expected values
