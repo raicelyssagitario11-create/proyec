@@ -114,3 +114,33 @@ alter table clients add column
    auth.uid()); create policy "own_payments" on payments for all using (created_by
    = auth.uid()) with check (created_by = auth.uid());
 ```
+
+## Crear tablas y datos de ejemplo (rápido)
+
+Si al cargar la app obtienes errores del tipo "Could not find the table 'public.payments'" es porque faltan tablas en la base. Sigue estos pasos:
+
+1. Abre tu proyecto en Supabase → SQL Editor → New query.
+2. Copia y pega el contenido de `sql/create_tables.sql` y ejecútalo (Run). Esto creará las tablas necesarias: `clients`, `projects`, `payments`, `tokens`, `logs`.
+3. Opcional: para rellenar datos de ejemplo pega y ejecuta `sql/seed_sample_data.sql`.
+4. Verifica en Table Editor que las tablas existen. Luego recarga tu app en el navegador.
+
+Si la ejecución da errores, copia aquí la salida y te ayudo a resolverla.
+
+## Configurar entrega de correos (SMTP)
+
+Para mejorar la entregabilidad de correos de verificación:
+
+- Registra un proveedor SMTP (SendGrid, Mailgun, Amazon SES).
+- En el Dashboard de Supabase: Project → Settings → SMTP, llena los datos (host, puerto, usuario, contraseña, from email).
+- Configura SPF/DKIM en tu DNS para el dominio remitente.
+
+Después de configurar SMTP, intenta registrar un usuario y revisa los logs en Supabase → Auth → Logs para ver eventos de envío o errores.
+
+## Depuración rápida del signup desde el navegador
+
+1. Abre la app (index.html) en el navegador y abre DevTools (F12).
+2. Pestaña Network: filtra por `auth` o busca la petición POST a `/auth/v1/signup`.
+3. Envía un registro desde la UI y revisa la respuesta (Response) y el código de estado.
+4. Consola (Console): verás ahora un `console.log` con la respuesta de `supabase.auth.signUp` que ayudará a identificar fallos.
+
+Si quieres, pega aquí la respuesta JSON o los logs y yo te diré exactamente qué cambiar.

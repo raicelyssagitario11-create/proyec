@@ -178,7 +178,9 @@ async function loadAdminData() {
         renderApp();
     } catch (e) {
         console.warn('loadAdminData error', e);
-        showMessage('Error', 'No se pudo cargar datos desde la base.');
+        // Mostrar el mensaje de error completo para facilitar el debug
+        const errMsg = (e && (e.message || e.details || JSON.stringify(e))) || 'Error desconocido';
+        showMessage('Error', `No se pudo cargar datos desde la base: ${errMsg}`);
     }
 }
 
@@ -195,14 +197,23 @@ function addClient() {
         (async () => {
             try {
                 const id = await supabaseNextId('clients');
-                const { error } = await window.supabase.from('clients').insert([{ id, name, email }]);
-                if (error) throw error;
+                const { data: insertData, error } = await window.supabase.from('clients').insert([{ id, name, email }]);
+                if (error) {
+                    console.error('addClient insert error:', error);
+                    const msg = (error.message || JSON.stringify(error));
+                    // Detectar violación de constraint UNIQUE sobre email (duplicate key)
+                    if ((error.code && String(error.code) === '23505') || /duplicate key|unique constraint|already exists/i.test(msg)) {
+                        return showMessage('Error', 'El email ya existe en la base de datos. Verifique o use otro email.');
+                    }
+                    throw error;
+                }
                 logAction('CLIENT_CREATE', `Cliente creado: ${name}`);
                 showMessage('Éxito', `Cliente ${name} agregado correctamente.`);
                 document.getElementById('new-client-name').value = '';
                 document.getElementById('new-client-email').value = '';
                 await loadAdminData();
             } catch (e) {
+                console.error('addClient error:', e);
                 showMessage('Error', String(e.message || e));
             }
         })();
@@ -534,8 +545,15 @@ async function handleUserSignUp() {
     if (!email || !password) return showMessage('Error', 'Ingrese email y contraseña para registrarse.');
 
     try {
-        const { data, error } = await window.supabase.auth.signUp({ email, password });
-        if (error) return showMessage('Error registro', error.message || JSON.stringify(error));
+        // Registrar usuario en Supabase — registrar la respuesta completa en consola para debug
+        const res = await window.supabase.auth.signUp({ email, password });
+        console.log('supabase.auth.signUp response:', res);
+        const { data, error } = res;
+        if (error) {
+            // mostrar error en modal y en consola
+            console.error('SignUp error:', error);
+            return showMessage('Error registro', error.message || JSON.stringify(error));
+        }
 
         // Si la confirmación por email está habilitada, data.user existe pero session puede ser null
         if (data?.session) {
@@ -549,6 +567,7 @@ async function handleUserSignUp() {
             showMessage('Registro recibido', 'Revise su email para confirmar la cuenta si aplica.');
         }
     } catch (err) {
+        console.error('handleUserSignUp exception:', err);
         showMessage('Error', String(err));
     }
 }
@@ -591,15 +610,179 @@ function printReport() {
 
 /** RENDER: Vista de Login */
 function renderLogin() {
-    // Vista principal: login admin + enlaces a vistas separadas para usuario (login / register)
+    // Vista principal: login admin + enlaces a vistas separadas para usuario (login / register) y cliente
     return `
         <div class="flex items-center justify-center min-h-[80vh] print-area">
             <div class="w-full max-w-md bg-white p-8 rounded-xl shadow-lg border border-gray-200">
-                <h2 class="text-2xl font-extrabold text-gray-900 mb-4">Acceso de Usuario</h2>
-                <p class="text-sm text-gray-500 mb-4">Inicia sesión o regístrate con tu cuenta (Supabase).</p>
+                <h2 class="text-2xl font-extrabold text-gray-900 mb-4">Acceso</h2>
+                <p class="text-sm text-gray-500 mb-4">Elija su tipo de acceso:</p>
                 <div class="space-y-3 mt-6">
                     <button onclick="setView('user-login')" class="w-full bg-indigo-600 text-white py-2 px-4 rounded-lg font-semibold hover:bg-indigo-700">Login de Usuario</button>
                     <button onclick="setView('user-register')" class="w-full bg-green-600 text-white py-2 px-4 rounded-lg font-semibold hover:bg-green-700">Registro de Usuario</button>
+                    <button onclick="setView('client-login')" class="w-full bg-blue-600 text-white py-2 px-4 rounded-lg font-semibold hover:bg-blue-700">Acceso Cliente</button>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+// Vista: Login de Cliente por nombre
+function renderClientLogin() {
+    return `
+        <div class="flex items-center justify-center min-h-[80vh]">
+            <div class="w-full max-w-md bg-white p-8 rounded-xl shadow-lg border border-gray-200">
+                <h2 class="text-2xl font-bold mb-4">Acceso de Cliente</h2>
+                <p class="text-sm text-gray-500 mb-4">Ingrese el nombre exacto de su empresa para ver sus proyectos y pagos.</p>
+                <form onsubmit="event.preventDefault(); handleClientLogin();">
+                    <input id="client-name-input" type="text" placeholder="Nombre de la Empresa" class="w-full p-3 border rounded-lg mb-4" required />
+                    <div class="flex gap-3">
+                        <button type="submit" class="flex-1 bg-blue-600 text-white py-2 rounded-lg">Entrar</button>
+                        <button type="button" onclick="setView('login')" class="flex-1 bg-gray-200 text-gray-700 py-2 rounded-lg">Volver</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    `;
+}
+
+// Lógica: Buscar cliente por nombre y mostrar dashboard
+async function handleClientLogin() {
+    const name = document.getElementById('client-name-input').value.trim();
+    if (!name) return showMessage('Error', 'Ingrese el nombre de la empresa.');
+    if (!window.supabase) return showMessage('Error', 'Supabase no inicializado.');
+    try {
+        // Buscar cliente por nombre exacto (case-insensitive)
+        const { data: clients, error } = await window.supabase.from('clients').select('*').ilike('name', name);
+        if (error) throw error;
+        if (!clients || clients.length === 0) return showMessage('No encontrado', 'No se encontró ninguna empresa con ese nombre.');
+        if (clients.length > 1) return showMessage('Ambiguo', 'Hay más de una empresa con ese nombre. Contacte al administrador.');
+        const client = clients[0];
+        // Buscar proyectos y pagos asociados
+        const { data: projects, error: projErr } = await window.supabase.from('projects').select('*').eq('client_id', client.id);
+        if (projErr) throw projErr;
+        const projectIds = (projects || []).map(p => p.id);
+        let payments = [];
+        if (projectIds.length > 0) {
+            const { data: pays, error: payErr } = await window.supabase.from('payments').select('*').in('project_id', projectIds);
+            if (payErr) throw payErr;
+            payments = pays;
+        }
+        // Mostrar dashboard de cliente
+        setView('client-dashboard', { client, projects, payments });
+    } catch (e) {
+        console.error('handleClientLogin error:', e);
+        showMessage('Error', String(e.message || e));
+    }
+}
+
+// Vista: Dashboard de Cliente (proyectos, pagos, PDF)
+function renderClientDashboard(data) {
+    const { client, projects, payments } = data;
+    // Cálculos Totales
+    const totalPaid = payments.reduce((sum, p) => sum + Number(p.amount), 0);
+    const totalBudget = projects.reduce((sum, p) => sum + Number(p.budget), 0);
+    const totalPending = projects.reduce((sum, p) => sum + Number(p.balance), 0);
+    const totalProjectCount = projects.length;
+    const activeProjectsCount = projects.filter(p => p.status === 1 || p.status === 'Activo').length;
+    const progress = totalBudget > 0 ? ((totalPaid / totalBudget) * 100).toFixed(0) : 0;
+    const statusToStr = s => (s === 1 || s === 'Activo') ? 'Activo' : 'Cerrado';
+    return `
+        <div class="max-w-6xl mx-auto print-area">
+            <header class="flex justify-between items-center mb-8 no-print">
+                <h1 class="text-3xl font-extrabold text-gray-900">Dashboard de Cliente</h1>
+                <div class="flex space-x-3">
+                    <button onclick="printReport()" class="bg-gray-200 text-gray-700 p-2 rounded-lg font-medium hover:bg-gray-300 transition flex items-center">Generar PDF</button>
+                    <button onclick="setView('login')" class="bg-red-500 text-white p-2 rounded-lg font-medium hover:bg-red-600 transition">Salir</button>
+                </div>
+            </header>
+            <div class="bg-white p-8 rounded-xl shadow-lg border border-gray-200">
+                <div class="print-only mb-6">
+                    <h1 class="text-2xl font-bold mb-1">Reporte Financiero: ${client.name}</h1>
+                    <p class="text-sm text-gray-500">Fecha del Reporte: ${new Date().toLocaleDateString('es-ES')}</p>
+                </div>
+                <h2 class="text-2xl font-bold mb-4 text-blue-600 border-b pb-2">Estado Financiero de ${client.name}</h2>
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+                    <div class="p-4 bg-blue-50 rounded-lg border border-blue-200">
+                        <p class="text-sm font-medium text-gray-500">Total Presupuestado</p>
+                        <p class="text-2xl font-semibold text-gray-900">${formatCurrency(totalBudget)}</p>
+                    </div>
+                    <div class="p-4 bg-green-50 rounded-lg border border-green-200">
+                        <p class="text-sm font-medium text-gray-500">Total Pagado</p>
+                        <p class="text-2xl font-semibold text-green-600">${formatCurrency(totalPaid)}</p>
+                    </div>
+                    <div class="p-4 bg-red-50 rounded-lg border border-red-200">
+                        <p class="text-sm font-medium text-gray-500">Total Pendiente</p>
+                        <p class="text-2xl font-semibold text-red-600">${formatCurrency(totalPending)}</p>
+                    </div>
+                    <div class="p-4 bg-yellow-50 rounded-lg border border-yellow-200">
+                        <p class="text-sm font-medium text-gray-500">Proyectos Activos</p>
+                        <p class="text-2xl font-semibold text-gray-900">${activeProjectsCount} de ${totalProjectCount}</p>
+                    </div>
+                </div>
+                <div class="mb-8">
+                    <p class="text-lg font-medium text-gray-700 mb-2">Progreso General de Inversión (${progress}%)</p>
+                    <div class="w-full bg-gray-200 rounded-full h-2.5">
+                        <div class="bg-blue-600 h-2.5 rounded-full" style="width: ${progress}%;"></div>
+                    </div>
+                </div>
+                <h3 class="text-xl font-bold mb-4 text-gray-700">Proyectos</h3>
+                <div class="overflow-x-auto mb-8">
+                    <table class="min-w-full divide-y divide-gray-200 rounded-lg overflow-hidden">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Proyecto</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Presupuesto</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Pagado</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Balance</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Estado</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-200">
+                            ${projects.map(p => {
+                                const paid = payments.filter(pay => pay.project_id === p.id).reduce((sum, pay) => sum + Number(pay.amount), 0);
+                                const statusColor = (p.status === 1 || p.status === 'Activo') ? 'text-green-600 bg-green-100' : 'text-gray-600 bg-gray-100';
+                                return `
+                                    <tr>
+                                        <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">${p.name}</td>
+                                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${formatCurrency(p.budget)}</td>
+                                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${formatCurrency(paid)}</td>
+                                        <td class="px-6 py-4 whitespace-nowrap text-sm font-semibold text-red-600">${formatCurrency(p.balance)}</td>
+                                        <td class="px-6 py-4 whitespace-nowrap">
+                                            <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${statusColor}">
+                                                ${statusToStr(p.status)}
+                                            </span>
+                                        </td>
+                                    </tr>
+                                `;
+                            }).join('')}
+                        </tbody>
+                    </table>
+                </div>
+                <h3 class="text-xl font-bold mb-4 text-gray-700">Historial de Pagos</h3>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-200 rounded-lg overflow-hidden">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Fecha</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Proyecto</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tipo de Pago</th>
+                                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Monto</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-200">
+                            ${payments.map(p => {
+                                const project = projects.find(proj => proj.id === p.project_id) || { name: 'N/A' };
+                                return `
+                                    <tr>
+                                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${p.date}</td>
+                                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${project.name}</td>
+                                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">${p.type}</td>
+                                        <td class="px-6 py-4 whitespace-nowrap text-sm text-right font-semibold">${formatCurrency(p.amount)}</td>
+                                    </tr>
+                                `;
+                            }).join('')}
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>
@@ -655,6 +838,7 @@ function renderUserDashboard() {
                 <h1 class="text-2xl font-bold">Panel de Usuario</h1>
                 <div class="flex items-center gap-3">
                     <span class="text-sm text-gray-600">${email}</span>
+                    <button onclick="printReport()" class="bg-gray-200 text-gray-700 py-2 px-3 rounded-lg">Generar PDF</button>
                     <button onclick="handleUserSignOut()" class="bg-red-500 text-white py-2 px-3 rounded-lg">Cerrar sesión</button>
                 </div>
             </header>
@@ -1050,33 +1234,36 @@ function renderAdminLogs() {
 /** RENDER PRINCIPAL */
 function renderApp() {
     const appDiv = document.getElementById('app');
-    appDiv.innerHTML = ''; // Limpiar contenido previo
-
-    if (state.currentView === 'login') {
-        appDiv.innerHTML = renderLogin();
-    } else if (state.currentView === 'admin') {
-        appDiv.innerHTML = renderAdminDashboard();
-    } else if (state.currentView === 'user') {
-        appDiv.innerHTML = renderUserDashboard();
-    } else if (state.currentView === 'user-login') {
-        appDiv.innerHTML = renderUserLogin();
-    } else if (state.currentView === 'user-register') {
-        appDiv.innerHTML = renderUserRegister();
-    } else if (state.currentView === 'client' && state.clientData) {
-        appDiv.innerHTML = renderClientDashboard(state.clientData);
-    } else {
-        // Caso por defecto: error o token inválido
-        appDiv.innerHTML = `
-            <div class="flex items-center justify-center min-h-[80vh]">
-                <div class="text-center p-8 bg-white rounded-xl shadow-lg">
-                    <h1 class="text-3xl font-bold text-red-600 mb-4">Acceso Denegado</h1>
-                    <p class="text-gray-600 mb-6">${state.message || 'El token de acceso es inválido o ha expirado. Contacte a su administrador.'}</p>
-                    <button onclick="setView('login')" class="bg-gray-200 text-gray-700 py-2 px-4 rounded-lg font-medium hover:bg-gray-300 transition">
-                        Volver al Inicio
-                    </button>
+    appDiv.innerHTML = '';
+    switch (state.currentView) {
+        case 'login':
+            appDiv.innerHTML = renderLogin(); break;
+        case 'admin':
+            appDiv.innerHTML = renderAdminDashboard(); break;
+        case 'user':
+            appDiv.innerHTML = renderUserDashboard(); break;
+        case 'user-login':
+            appDiv.innerHTML = renderUserLogin(); break;
+        case 'user-register':
+            appDiv.innerHTML = renderUserRegister(); break;
+        case 'client-login':
+            appDiv.innerHTML = renderClientLogin(); break;
+        case 'client-dashboard':
+            appDiv.innerHTML = renderClientDashboard(state.clientData); break;
+        case 'client': // compatibilidad con token
+            appDiv.innerHTML = renderClientDashboard(state.clientData); break;
+        default:
+            appDiv.innerHTML = `
+                <div class="flex items-center justify-center min-h-[80vh]">
+                    <div class="text-center p-8 bg-white rounded-xl shadow-lg">
+                        <h1 class="text-3xl font-bold text-red-600 mb-4">Acceso Denegado</h1>
+                        <p class="text-gray-600 mb-6">${state.message || 'El token de acceso es inválido o ha expirado. Contacte a su administrador.'}</p>
+                        <button onclick="setView('login')" class="bg-gray-200 text-gray-700 py-2 px-4 rounded-lg font-medium hover:bg-gray-300 transition">
+                            Volver al Inicio
+                        </button>
+                    </div>
                 </div>
-            </div>
-        `;
+            `;
     }
 }
 

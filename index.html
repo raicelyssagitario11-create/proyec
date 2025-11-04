@@ -1,39 +1,39 @@
-<!DOCTYPE html>
+ <!DOCTYPE html>
 <html lang="es">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Reportes Financieros | Mockup</title>
-    <!-- Carga de Tailwind CSS -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Configuración para usar la fuente Inter -->
-    <link rel="stylesheet" href="styles.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reportes Financieros | Mockup</title>
+    <!-- Carga de Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Configuración para usar la fuente Inter -->
+    <link rel="stylesheet" href="styles.css">
 </head>
 <body class="bg-gray-50 min-h-screen">
-    <div id="app" class="p-4 sm:p-8">
-        <!-- Contenido principal cargado por JS -->
-    </div>
+    <div id="app" class="p-4 sm:p-8">
+        <!-- Contenido principal cargado por JS -->
+    </div>
 
-    <!-- Modal de Mensaje (Reemplazo de alert()) -->
-    <div id="message-modal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50">
-        <div class="bg-white p-6 rounded-xl shadow-2xl max-w-sm w-full">
-            <h3 id="modal-title" class="text-xl font-bold mb-4 text-gray-800">Mensaje</h3>
-            <p id="modal-content" class="text-gray-600 mb-6"></p>
-            <button onclick="document.getElementById('message-modal').classList.add('hidden')" class="w-full bg-blue-600 text-white p-3 rounded-lg font-semibold hover:bg-blue-700 transition">Cerrar</button>
-        </div>
-    </div>
+    <!-- Modal de Mensaje (Reemplazo de alert()) -->
+    <div id="message-modal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50">
+        <div class="bg-white p-6 rounded-xl shadow-2xl max-w-sm w-full">
+            <h3 id="modal-title" class="text-xl font-bold mb-4 text-gray-800">Mensaje</h3>
+            <p id="modal-content" class="text-gray-600 mb-6"></p>
+            <button onclick="document.getElementById('message-modal').classList.add('hidden')" class="w-full bg-blue-600 text-white p-3 rounded-lg font-semibold hover:bg-blue-700 transition">Cerrar</button>
+        </div>
+    </div>
 
-    <script type="module">
-        import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm'
+    <script type="module">
+        import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm'
 
-        const SUPABASE_URL = 'https://gazuakkeynwoeaazrnzw.supabase.co'
-        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdhenVha2tleW53b2VhYXpybnp3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjIwMTIwNzgsImV4cCI6MjA3NzU4ODA3OH0.8ieyGHej7ORwfI_RcEjn8irznximnWlNbuuKZEDU8ng'
-        const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+        const SUPABASE_URL = 'https://ofawizrzkyfcywlkxftn.supabase.co'
+        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9mYXdpenJ6a3lmY3l3bGt4ZnRuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjIwMDQyMzUsImV4cCI6MjA3NzU4MDIzNX0.J2k8HwrrCjTHN5P_kEefr3zbn0Idy8XQ-33M9L_iC0w'
+        const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
 
-        // ejemplo sencillo
-        window.supabase = supabase
-        console.log('Supabase inicializado')
-    </script>
-    <script src="app.js"></script>
+        // ejemplo sencillo
+        window.supabase = supabase
+        console.log('Supabase inicializado')
+    </script>
+    <script src="app.js"></script>
 </body>
 </html>

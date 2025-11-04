@@ -31,3 +31,33 @@ CREATE TABLE IF NOT EXISTS projects (
     created_at TIMESTAMPTZ DEFAULT now()
     -- delete Boolean DEFAULT FALSE
 );
+
+-- PAYMENTS
+CREATE TABLE IF NOT EXISTS payments (
+    id integer PRIMARY KEY,
+    project_id integer NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    date date NOT NULL,
+    amount NUMERIC(14,2) NOT NULL CHECK (amount >= 0),
+    type TEXT,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- TOKENS (enlaces temporales para clientes)
+CREATE TABLE IF NOT EXISTS tokens (
+    token TEXT PRIMARY KEY,
+    client_id integer NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    expires_at BIGINT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- LOGS (auditoría simple)
+CREATE TABLE IF NOT EXISTS logs (
+    id BIGSERIAL PRIMARY KEY,
+    timestamp TIMESTAMPTZ DEFAULT now(),
+    action TEXT,
+    detail TEXT
+);
+
+-- Índices recomendados
+CREATE INDEX IF NOT EXISTS idx_projects_client_id ON projects(client_id);
+CREATE INDEX IF NOT EXISTS idx_payments_project_id ON payments(project_id);
